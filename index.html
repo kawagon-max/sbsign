@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja"><head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://kawagon.jp https://discord.com; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>署名</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#fff;color:#1d2b24;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;-webkit-text-size-adjust:100%}
+.s{display:none;min-height:100%;max-width:440px;margin:0 auto;padding:56px 28px 36px;flex-direction:column;align-items:center;text-align:center}
+.s.on{display:flex}
+h1{font-size:26px;font-weight:800;margin-bottom:44px}
+.ver{font-size:68px;font-weight:800;color:#2e9e5b;word-break:break-all}
+.sub{font-size:20px;color:#6b7a72;margin-top:12px}
+.btn{margin-top:auto;width:100%;padding:20px;background:#2e9e5b;color:#fff;font-size:22px;font-weight:700;border:0;border-radius:16px;font-family:inherit}
+.btn:disabled{background:#b9c8bf}
+.lock{font-size:80px;margin:24px 0 32px}
+input{width:100%;padding:18px;border:3px solid #2e9e5b;border-radius:14px;font-size:24px;text-align:center;color:#1d2b24;font-family:inherit;margin-bottom:14px}
+.msg{min-height:30px;font-size:19px;color:#b02020;margin-top:6px;font-weight:700}
+.note{font-size:17px;color:#6b7a72;margin-bottom:18px}
+.check{width:180px;height:180px;border-radius:50%;background:#2e9e5b;color:#fff;font-size:120px;line-height:180px;margin:60px 0 40px}
+.ok{font-size:30px;font-weight:800;line-height:1.4}
+.small{font-size:18px;color:#6b7a72;margin-top:auto}
+.err{font-size:24px;font-weight:800;margin-top:80px}
+</style></head><body>
+
+<div class="s on" id="s_load"><div class="sub" style="margin-top:120px">読み込み中…</div></div>
+<div class="s" id="s_err"><div class="err" id="err_t"></div></div>
+
+<div class="s" id="s_sign1">
+  <h1>署名のお願い</h1>
+  <div class="ver" id="v_ver"></div>
+  <div class="sub" id="v_cnt"></div>
+  <div class="sub" id="v_sha"></div>
+  <button class="btn" id="b_open" type="button">合言葉を打つ</button>
+</div>
+<div class="s" id="s_sign2">
+  <div class="lock">🔒</div>
+  <input id="i_pw" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="合言葉">
+  <div class="msg" id="m_sign"></div>
+  <button class="btn" id="b_sign" type="button">署名する</button>
+</div>
+<div class="s" id="s_sign3">
+  <div class="check">✓</div>
+  <div class="ok" id="o_sign"></div>
+  <div class="small">このページは閉じて大丈夫です</div>
+</div>
+
+<div class="s" id="s_key1">
+  <h1>鍵を作る</h1>
+  <div class="note">合言葉を2回（20字以上）</div>
+  <input id="k_pw1" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="合言葉">
+  <input id="k_pw2" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="もう一度">
+  <div class="msg" id="m_key"></div>
+  <button class="btn" id="b_key" type="button" disabled>鍵を作る</button>
+</div>
+<div class="s" id="s_key2">
+  <div class="check">✓</div>
+  <div class="ok">鍵を作りました</div>
+  <div class="small">このページは閉じて大丈夫です</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+// 合言葉・開いた鍵は変数だけ（ブラウザの記憶の場所・cookie・記録の窓のどれにも書かない）。送るのは、署名（base64）か、鍵のかかった鍵ファイルの2つだけ。
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const PBKDF2_ITER = 600000, MIN_PW = 20;
+const show = (id) => { document.querySelectorAll(".s").forEach((e) => e.classList.remove("on")); $(id).classList.add("on"); };
+const fail = (t) => { $("err_t").textContent = t; show("s_err"); };
+const b64d = (s) => { const b = atob(s); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+const b64e = (u8) => { let s = ""; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s); };
+const hex = (buf) => Array.from(new Uint8Array(buf), (x) => x.toString(16).padStart(2, "0")).join("");
+const pwBytes = (pw) => enc.encode(pw.normalize("NFC"));
+const pwLen = (pw) => Array.from(pw.normalize("NFC")).length;
+
+async function aesKey(pw, salt, iter, usages) {
+  const base = await crypto.subtle.importKey("raw", pwBytes(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: iter }, base, { name: "AES-GCM", length: 256 }, false, usages);
+}
+async function ed25519Ok() {
+  try { await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]); return true; } catch (e) { return false; }
+}
+async function post(hook, text) {
+  if (typeof hook !== "string" || !hook.startsWith("https://discord.com/api/webhooks/")) throw new Error("hook");
+  const r = await fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text }), credentials: "omit", referrerPolicy: "no-referrer" });
+  if (!r.ok) throw new Error("post");
+}
+
+async function main() {
+  const id = new URLSearchParams(location.search).get("id") || "";
+  if (!/^[A-Za-z0-9]{32}$/.test(id)) return fail("このページは使えません");
+  if (!(window.crypto && crypto.subtle && await ed25519Ok())) return fail("このブラウザでは使えません");
+  let req;
+  try {
+    const r = await fetch("https://kawagon.jp/" + id + "/req.json", { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" });
+    if (!r.ok) throw new Error("req");
+    req = await r.json();
+  } catch (e) { return fail("お願いが見つかりません"); }
+  if (!req || typeof req.hook !== "string") return fail("お願いの形が違います");
+  if (req.mode === "sign") return signMode(req);
+  if (req.mode === "keygen") return keygenMode(req);
+  return fail("お願いの形が違います");
+}
+
+// ───── 署名する（mode＝sign） ─────
+async function signMode(req) {
+  let mb, ver, cnt, key;
+  try {
+    mb = b64d(req.manifest_b64);                                  // 版・個数・印は、このページが manifest のバイトから自分で読む（req.json の別の版は使わない）
+    const m = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(mb));
+    ver = m.version; cnt = Object.keys(m.files).length;
+    if (typeof ver !== "string" || !/^\d+\.\d+\.\d+$/.test(ver)) throw new Error("ver");
+    key = req.enc_key;
+    if (!key || key.v !== 1 || !Number.isInteger(key.iter) || key.iter < 100000 || key.iter > 5000000) throw new Error("key");
+    for (const k of ["salt", "iv", "ct", "pub"]) if (typeof key[k] !== "string") throw new Error("key");
+    if (b64d(key.pub).length !== 32) throw new Error("pub");
+  } catch (e) { return fail("お願いの形が違います"); }
+  const sha8 = hex(await crypto.subtle.digest("SHA-256", mb)).slice(0, 8);
+  $("v_ver").textContent = ver;
+  $("v_cnt").textContent = "ファイル " + cnt + "個";
+  $("v_sha").textContent = "印 " + sha8 + "…";
+  show("s_sign1");
+  let sig = null;
+  $("b_open").onclick = () => { $("i_pw").value = ""; $("m_sign").textContent = ""; show("s_sign2"); $("i_pw").focus(); };
+  $("b_sign").onclick = async () => {
+    const btn = $("b_sign"); btn.disabled = true; $("m_sign").textContent = "";
+    try {
+      if (!sig) {
+        let pw = $("i_pw").value;
+        if (!pw) { btn.disabled = false; return; }
+        let priv;
+        try {
+          const ak = await aesKey(pw, b64d(key.salt), key.iter, ["decrypt"]);
+          const pkcs8 = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(key.iv) }, ak, b64d(key.ct));
+          priv = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
+        } catch (e) {
+          $("i_pw").value = ""; pw = null;
+          $("m_sign").textContent = "合言葉が違います";            // 何も送らない
+          btn.disabled = false; return;
+        }
+        $("i_pw").value = ""; pw = null;                          // 開けたらすぐ捨てる
+        const s = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, priv, mb));
+        priv = null;
+        const pub = await crypto.subtle.importKey("raw", b64d(key.pub), { name: "Ed25519" }, false, ["verify"]);
+        if (!(await crypto.subtle.verify({ name: "Ed25519" }, pub, s, mb))) throw new Error("self");   // 鍵に付いている公開の鍵で自分で確かめてから送る
+        sig = b64e(s);
+      }
+      await post(req.hook, sig);                                  // 送るのは署名（base64）だけ
+      $("o_sign").textContent = "署名しました " + ver;
+      sig = null; show("s_sign3");
+    } catch (e) {
+      $("m_sign").textContent = "送れませんでした。もう一度押してください";
+      btn.disabled = false;
+    }
+  };
+}
+
+// ───── 鍵を作る（mode＝keygen） ─────
+function keygenMode(req) {
+  show("s_key1");
+  const p1 = $("k_pw1"), p2 = $("k_pw2"), btn = $("b_key"), msg = $("m_key");
+  let done = false;
+  const check = () => {
+    const a = p1.value, b = p2.value;
+    let t = "";
+    if (a && pwLen(a) < MIN_PW) t = MIN_PW + "字より短いです（今 " + pwLen(a) + "字）";
+    else if (a && b && a !== b) t = "2つが同じではありません";
+    msg.textContent = t;
+    btn.disabled = done || !(pwLen(a) >= MIN_PW && a === b);
+  };
+  p1.oninput = check; p2.oninput = check;
+  btn.onclick = async () => {
+    check();
+    if (btn.disabled) return;                                       // 20字より短い・2つが違うと進めない
+    btn.disabled = true; done = true; msg.textContent = "作っています…";
+    try {
+      let pw = p1.value;
+      const kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+      const pkcs8 = await crypto.subtle.exportKey("pkcs8", kp.privateKey);
+      const pub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+      const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+      const ak = await aesKey(pw, salt, PBKDF2_ITER, ["encrypt"]);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, ak, pkcs8));
+      const out = JSON.stringify({ v: 1, iter: PBKDF2_ITER, salt: b64e(salt), iv: b64e(iv), ct: b64e(ct), pub: b64e(pub) });
+      p1.value = ""; p2.value = ""; pw = null;                      // 合言葉・開いた鍵はここで捨てる（変数だけにあった）
+      await post(req.hook, out);                                     // 送るのは鍵のかかった鍵ファイルだけ
+      show("s_key2");
+    } catch (e) {
+      done = false; msg.textContent = "うまくいきませんでした。合言葉をもう一度打ってください"; check();
+    }
+  };
+}
+
+main().catch(() => fail("うまくいきませんでした"));
+})();
+</script>
+</body></html>
